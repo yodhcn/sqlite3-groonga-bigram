@@ -75,7 +75,7 @@ install_sqlite() {
 	cd /tmp
 	rm -rf sqlite-autoconf-*
 
-	echo "SQLite ${NEW_VER} 安装完成!"
+	echo "SQLite ${SQLITE_VERSION} 安装完成!"
 }
 
 # 验证安装
