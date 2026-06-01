@@ -11,11 +11,6 @@ on:
         required: false
         default: ""
         type: string
-      groonga_version:
-        description: "Groonga version (e.g., 16.0.1-1)"
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: write
@@ -33,9 +28,6 @@ jobs:
           chmod +x setup.sh
           if [ -n "${{ github.event.inputs.sqlite_version }}" ]; then
             export SQLITE_VERSION="${{ github.event.inputs.sqlite_version }}"
-          fi
-          if [ -n "${{ github.event.inputs.groonga_version }}" ]; then
-            export GROONGA_VERSION="${{ github.event.inputs.groonga_version }}"
           fi
           ./setup.sh
 

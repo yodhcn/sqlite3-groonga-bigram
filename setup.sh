@@ -3,7 +3,6 @@
 set -e
 
 SQLITE_VERSION="${SQLITE_VERSION:-3510300}"
-GROONGA_VERSION="${GROONGA_VERSION:-16.0.1-1}"
 
 echo "开始安装开发环境依赖..."
 
@@ -45,7 +44,7 @@ install_deps() {
 	echo "检测到 $OS $VER"
 	echo "安装依赖..."
 	sudo apt update
-	sudo apt -V -y install gcc make pkg-config groonga=${GROONGA_VERSION} libgroonga-dev=${GROONGA_VERSION}
+	sudo apt -V -y install gcc make pkg-config groonga libgroonga-dev
 }
 
 # 从源码编译安装 SQLite
