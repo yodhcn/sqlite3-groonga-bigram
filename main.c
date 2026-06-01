@@ -1,36 +1,147 @@
 #include <groonga.h>
 #include <stdlib.h>
 #include <inttypes.h>
-#include <sqlite3ext.h> /* Do not use <sqlite3.h>! */
+#include <sqlite3ext.h>
+#include <pthread.h>
 
 SQLITE_EXTENSION_INIT1
 
 static int groonga_initialized = 0;
+static pthread_once_t groonga_init_once = PTHREAD_ONCE_INIT;
 
-typedef struct BigramTokenizer
-{
+typedef struct ThreadLocalContext {
   grn_ctx *ctx;
   grn_obj *db;
   grn_obj *table;
+  struct ThreadLocalContext *next;
+} ThreadLocalContext;
+
+typedef struct BigramTokenizer
+{
+  pthread_key_t tls_key;
+  ThreadLocalContext *cleanup_list;
+  pthread_mutex_t cleanup_mutex;
 } BigramTokenizer;
+
+static void init_groonga(void)
+{
+  grn_init();
+  groonga_initialized = 1;
+}
+
+static void cleanup_thread_local_context(void *arg)
+{
+  ThreadLocalContext *tlc = (ThreadLocalContext *)arg;
+  if (tlc)
+  {
+    if (tlc->table)
+    {
+      grn_obj_close(tlc->ctx, tlc->table);
+    }
+    if (tlc->db)
+    {
+      grn_obj_close(tlc->ctx, tlc->db);
+    }
+    if (tlc->ctx)
+    {
+      grn_ctx_close(tlc->ctx);
+    }
+    free(tlc);
+  }
+}
+
+static ThreadLocalContext *get_thread_local_context(BigramTokenizer *p)
+{
+  ThreadLocalContext *tlc = (ThreadLocalContext *)pthread_getspecific(p->tls_key);
+  if (tlc)
+  {
+    return tlc;
+  }
+
+  tlc = (ThreadLocalContext *)malloc(sizeof(ThreadLocalContext));
+  if (!tlc)
+  {
+    return NULL;
+  }
+  memset(tlc, 0, sizeof(ThreadLocalContext));
+
+  tlc->ctx = grn_ctx_open(0);
+  if (!tlc->ctx)
+  {
+    free(tlc);
+    return NULL;
+  }
+
+  tlc->db = grn_db_create(tlc->ctx, NULL, NULL);
+  if (!tlc->db)
+  {
+    grn_ctx_close(tlc->ctx);
+    free(tlc);
+    return NULL;
+  }
+
+  grn_obj_flags table_flags = GRN_OBJ_TABLE_PAT_KEY;
+  grn_obj *key_type = grn_ctx_at(tlc->ctx, GRN_DB_SHORT_TEXT);
+  tlc->table = grn_table_create(tlc->ctx, "lexicon", 7, NULL, table_flags, key_type, NULL);
+  if (!tlc->table)
+  {
+    grn_obj_close(tlc->ctx, tlc->db);
+    grn_ctx_close(tlc->ctx);
+    free(tlc);
+    return NULL;
+  }
+
+  grn_obj tokenizer_str;
+  GRN_TEXT_INIT(&tokenizer_str, 0);
+  GRN_TEXT_SET(tlc->ctx, &tokenizer_str,
+               "TokenNgram(\"unit\", 2, \"report_source_location\", true)",
+               strlen("TokenNgram(\"unit\", 2, \"report_source_location\", true)"));
+  grn_obj_set_info(tlc->ctx, tlc->table, GRN_INFO_DEFAULT_TOKENIZER, &tokenizer_str);
+  GRN_OBJ_FIN(tlc->ctx, &tokenizer_str);
+
+  grn_obj normalizer_str;
+  GRN_TEXT_INIT(&normalizer_str, 0);
+  GRN_TEXT_SET(tlc->ctx, &normalizer_str,
+               "NormalizerAuto(\"report_source_offset\", true)",
+               strlen("NormalizerAuto(\"report_source_offset\", true)"));
+  grn_obj_set_info(tlc->ctx, tlc->table, GRN_INFO_NORMALIZERS, &normalizer_str);
+  GRN_OBJ_FIN(tlc->ctx, &normalizer_str);
+
+  if (pthread_setspecific(p->tls_key, tlc) != 0)
+  {
+    grn_obj_close(tlc->ctx, tlc->table);
+    grn_obj_close(tlc->ctx, tlc->db);
+    grn_ctx_close(tlc->ctx);
+    free(tlc);
+    return NULL;
+  }
+
+  pthread_mutex_lock(&p->cleanup_mutex);
+  tlc->next = p->cleanup_list;
+  p->cleanup_list = tlc;
+  pthread_mutex_unlock(&p->cleanup_mutex);
+
+  return tlc;
+}
 
 static void bigram_tokenizer_delete(Fts5Tokenizer *pTokenizer)
 {
   BigramTokenizer *p = (BigramTokenizer *)pTokenizer;
   if (p)
   {
-    if (p->table)
+    pthread_key_delete(p->tls_key);
+
+    pthread_mutex_lock(&p->cleanup_mutex);
+    ThreadLocalContext *tlc = p->cleanup_list;
+    while (tlc)
     {
-      grn_obj_close(p->ctx, p->table);
+      ThreadLocalContext *next = tlc->next;
+      cleanup_thread_local_context(tlc);
+      tlc = next;
     }
-    if (p->db)
-    {
-      grn_obj_close(p->ctx, p->db);
-    }
-    if (p->ctx)
-    {
-      grn_ctx_close(p->ctx);
-    }
+    pthread_mutex_unlock(&p->cleanup_mutex);
+
+    pthread_mutex_destroy(&p->cleanup_mutex);
     sqlite3_free(p);
   }
 }
@@ -43,11 +154,7 @@ static int bigram_tokenizer_create(void *pUserData, const char **azArg, int nArg
   (void)azArg;
   (void)nArg;
 
-  if (!groonga_initialized)
-  {
-    grn_init();
-    groonga_initialized = 1;
-  }
+  pthread_once(&groonga_init_once, init_groonga);
 
   pTokenizer = (BigramTokenizer *)sqlite3_malloc(sizeof(BigramTokenizer));
   if (!pTokenizer)
@@ -56,44 +163,18 @@ static int bigram_tokenizer_create(void *pUserData, const char **azArg, int nArg
   }
   memset(pTokenizer, 0, sizeof(BigramTokenizer));
 
-  pTokenizer->ctx = grn_ctx_open(0);
-  if (!pTokenizer->ctx)
+  if (pthread_key_create(&pTokenizer->tls_key, cleanup_thread_local_context) != 0)
   {
-    bigram_tokenizer_delete((Fts5Tokenizer *)pTokenizer);
+    sqlite3_free(pTokenizer);
     return SQLITE_ERROR;
   }
 
-  pTokenizer->db = grn_db_create(pTokenizer->ctx, NULL, NULL);
-  if (!pTokenizer->db)
+  if (pthread_mutex_init(&pTokenizer->cleanup_mutex, NULL) != 0)
   {
-    bigram_tokenizer_delete((Fts5Tokenizer *)pTokenizer);
+    pthread_key_delete(pTokenizer->tls_key);
+    sqlite3_free(pTokenizer);
     return SQLITE_ERROR;
   }
-
-  grn_obj_flags table_flags = GRN_OBJ_TABLE_PAT_KEY;
-  grn_obj *key_type = grn_ctx_at(pTokenizer->ctx, GRN_DB_SHORT_TEXT);
-  pTokenizer->table = grn_table_create(pTokenizer->ctx, "lexicon", 7, NULL, table_flags, key_type, NULL);
-  if (!pTokenizer->table)
-  {
-    bigram_tokenizer_delete((Fts5Tokenizer *)pTokenizer);
-    return SQLITE_ERROR;
-  }
-
-  grn_obj tokenizer_str;
-  GRN_TEXT_INIT(&tokenizer_str, 0);
-  GRN_TEXT_SET(pTokenizer->ctx, &tokenizer_str,
-               "TokenNgram(\"unit\", 2, \"report_source_location\", true)",
-               strlen("TokenNgram(\"unit\", 2, \"report_source_location\", true)"));
-  grn_obj_set_info(pTokenizer->ctx, pTokenizer->table, GRN_INFO_DEFAULT_TOKENIZER, &tokenizer_str);
-  GRN_OBJ_FIN(pTokenizer->ctx, &tokenizer_str);
-
-  grn_obj normalizer_str;
-  GRN_TEXT_INIT(&normalizer_str, 0);
-  GRN_TEXT_SET(pTokenizer->ctx, &normalizer_str,
-               "NormalizerAuto(\"report_source_offset\", true)",
-               strlen("NormalizerAuto(\"report_source_offset\", true)"));
-  grn_obj_set_info(pTokenizer->ctx, pTokenizer->table, GRN_INFO_NORMALIZERS, &normalizer_str);
-  GRN_OBJ_FIN(pTokenizer->ctx, &normalizer_str);
 
   *ppOut = (Fts5Tokenizer *)pTokenizer;
   return SQLITE_OK;
@@ -112,33 +193,41 @@ static int bigram_tokenizer_tokenize_impl(
         int iStart,
         int iEnd))
 {
+  ThreadLocalContext *tlc = get_thread_local_context(p);
+  if (!tlc)
+  {
+    return SQLITE_ERROR;
+  }
+
+  grn_ctx *ctx = tlc->ctx;
+  grn_obj *table = tlc->table;
 
   grn_tokenize_mode mode = GRN_TOKENIZE_ONLY;
 
   grn_token_cursor *cursor = grn_token_cursor_open(
-      p->ctx, p->table, pText, nText, mode, 0);
+      ctx, table, pText, nText, mode, 0);
 
   if (!cursor)
   {
     return SQLITE_ERROR;
   }
 
-  while (grn_token_cursor_get_status(p->ctx, cursor) == GRN_TOKEN_CURSOR_DOING)
+  while (grn_token_cursor_get_status(ctx, cursor) == GRN_TOKEN_CURSOR_DOING)
   {
-    grn_token_cursor_next(p->ctx, cursor);
+    grn_token_cursor_next(ctx, cursor);
 
-    grn_token *token = grn_token_cursor_get_token(p->ctx, cursor);
+    grn_token *token = grn_token_cursor_get_token(ctx, cursor);
     if (token)
     {
       size_t token_len = 0;
-      const char *token_str = grn_token_get_data_raw(p->ctx, token, &token_len);
+      const char *token_str = grn_token_get_data_raw(ctx, token, &token_len);
 
       if (token_str && token_len > 0)
       {
-        grn_token_status status = grn_token_get_status(p->ctx, token);
+        grn_token_status status = grn_token_get_status(ctx, token);
 
-        uint64_t start_offset = grn_token_get_source_offset(p->ctx, token);
-        uint32_t source_length = grn_token_get_source_length(p->ctx, token);
+        uint64_t start_offset = grn_token_get_source_offset(ctx, token);
+        uint32_t source_length = grn_token_get_source_length(ctx, token);
         uint64_t end_offset = start_offset + source_length;
 
         if ((flags & FTS5_TOKENIZE_QUERY) &&
@@ -153,7 +242,7 @@ static int bigram_tokenizer_tokenize_impl(
         char *token_copy = malloc(token_len + 1);
         if (!token_copy)
         {
-          grn_token_cursor_close(p->ctx, cursor);
+          grn_token_cursor_close(ctx, cursor);
           return SQLITE_NOMEM;
         }
         memcpy(token_copy, token_str, token_len);
@@ -163,14 +252,14 @@ static int bigram_tokenizer_tokenize_impl(
         free(token_copy);
         if (rc != SQLITE_OK)
         {
-          grn_token_cursor_close(p->ctx, cursor);
+          grn_token_cursor_close(ctx, cursor);
           return rc;
         }
       }
     }
   }
 
-  grn_token_cursor_close(p->ctx, cursor);
+  grn_token_cursor_close(ctx, cursor);
   return SQLITE_OK;
 }
 
