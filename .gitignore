@@ -1,4 +1,5 @@
 .vscode/
+!.vscode/settings.json
 libbigram.so
 test.db
 compile_commands.json

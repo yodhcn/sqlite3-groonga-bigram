@@ -2,8 +2,6 @@
 
 set -e
 
-SQLITE_VERSION="${SQLITE_VERSION:-3510300}"
-
 echo "开始安装开发环境依赖..."
 
 # 检测操作系统类型
@@ -44,14 +42,14 @@ install_deps() {
 	echo "检测到 $OS $VER"
 	echo "安装依赖..."
 	sudo apt update
-	sudo apt -V -y install gcc make pkg-config groonga libgroonga-dev
+	sudo apt -V -y install gcc make pkg-config bear groonga libgroonga-dev
 }
 
 # 从源码编译安装 SQLite
 install_sqlite() {
-	echo "从源码编译安装 SQLite ${SQLITE_VERSION}..."
+	echo "从源码编译安装 SQLite..."
 
-	local SQLITE_AUTOCONF_URL="https://www.sqlite.org/2026/sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
+	local SQLITE_AUTOCONF_URL="https://www.sqlite.org/2026/sqlite-autoconf-3510300.tar.gz"
 
 	cd /tmp
 
@@ -74,7 +72,7 @@ install_sqlite() {
 	cd /tmp
 	rm -rf sqlite-autoconf-*
 
-	echo "SQLite ${SQLITE_VERSION} 安装完成!"
+	echo "SQLite安装完成!"
 }
 
 # 验证安装
