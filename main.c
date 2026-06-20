@@ -29,7 +29,7 @@ static void init_groonga(void)
   grn_init();
 }
 
-#define TOKENIZER_STR "TokenNgram(\"unit\", 2, \"report_source_location\", true)"
+#define TOKENIZER_STR "TokenNgram(\"n\", 2, \"report_source_location\", true, \"unify_symbol\", false)"
 #define NORMALIZER_STR "NormalizerAuto(\"report_source_offset\", true)"
 
 /* 释放线程本地的 Groonga 资源 */

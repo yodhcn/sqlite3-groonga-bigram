@@ -21,10 +21,18 @@ sqlite3 test.db <<'EOF'
 CREATE VIRTUAL TABLE docs USING fts5(content, tokenize='bigram');
 INSERT INTO docs VALUES('Hello World你好世界');
 INSERT INTO docs VALUES('World Hello世界你好');
+INSERT INTO docs VALUES('【ブルーアーカイブ】ユウカASMR～頑張るあなたのすぐそばに～');
+INSERT INTO docs VALUES('【ブルーアーカイブ】カヨコASMR～穏やかで温かい距離感～');
 CREATE VIRTUAL TABLE vocab USING fts5vocab(docs, row);
 
 SELECT '=== All tokens in index ===' as result;
 SELECT * FROM vocab;
+
+SELECT '=== Query: 【ブルーアーカイブ】 ===' as result;
+SELECT highlight(docs, 0, '<b>', '</b>') FROM docs WHERE docs MATCH '【ブルーアーカイブ】';
+
+SELECT '=== Query: ブルーアーカイブ ===' as result;
+SELECT highlight(docs, 0, '<b>', '</b>') FROM docs WHERE docs MATCH 'ブルーアーカイブ';
 
 SELECT '=== Query: 你好 世界 ===' as result;
 SELECT highlight(docs, 0, '<b>', '</b>') FROM docs WHERE docs MATCH '你好 世界';
