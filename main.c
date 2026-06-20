@@ -29,7 +29,7 @@ static void init_groonga(void)
   grn_init();
 }
 
-#define TOKENIZER_STR "TokenNgram(\"n\", 2, \"report_source_location\", true, \"unify_symbol\", false)"
+#define TOKENIZER_STR "TokenNgram(\"n\", 2, \"report_source_location\", true)"
 #define NORMALIZER_STR "NormalizerAuto(\"report_source_offset\", true)"
 
 /* 释放线程本地的 Groonga 资源 */
@@ -206,13 +206,10 @@ static int bigram_tokenizer_tokenize_impl(BigramTokenizer *p, void *pCtx, int fl
     if (!token_str || token_len == 0)
       continue;
 
-    /* 对于查询模式，跳过未成熟且重叠的 token */
-    if ((flags & FTS5_TOKENIZE_QUERY) && !(flags & FTS5_TOKENIZE_DOCUMENT))
-    {
-      grn_token_status status = grn_token_get_status(tlc->ctx, token);
-      if ((status & GRN_TOKEN_UNMATURED) && (status & GRN_TOKEN_OVERLAP))
-        continue;
-    }
+    /* 跳过未成熟且重叠的 token */
+    grn_token_status status = grn_token_get_status(tlc->ctx, token);
+    if ((status & GRN_TOKEN_UNMATURED) && (status & GRN_TOKEN_OVERLAP))
+      continue;
 
     /* 获取 token 在原文中的位置信息 */
     uint64_t start_offset = grn_token_get_source_offset(tlc->ctx, token);
